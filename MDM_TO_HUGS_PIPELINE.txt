@@ -1,0 +1,208 @@
+# MDM → ML-HUGS Pipeline: Complete Step-by-Step Guide
+
+## The Problem You Mentioned (Upside-Down Avatar)
+
+This occurs due to **coordinate system mismatch**:
+- **MDM**: Uses Y-up convention (standard for motion capture)
+- **HUGS**: Uses a different convention (likely Z-up)
+
+## Solution Overview
+
+We convert MDM output with coordinate transformation to fix the orientation.
+
+---
+
+## Step 1: Generate Motion with MDM
+
+You already have this:
+```bash
+cd /home/sigma/skibidi/motion-diffusion-model
+# Your existing command that generates: samples_00_to_00.mp4
+```
+
+After this, MDM saves: `results.npy` in the output directory.
+
+---
+
+## Step 2: Convert MDM Output to HUGS Format
+
+### Option A: Direct Conversion with Coordinate Fix
+
+```bash
+cd /home/sigma/skibidi/motion-diffusion-model
+
+# Find the results.npy from your MDM generation
+MDM_OUTPUT_DIR="/home/sigma/skibidi/motion-diffusion-model/save/humanml_enc_512_50steps/samples_humanml_enc_512_50steps_000750000_seed10_a_person_jumps"
+
+# Convert with 90-degree X rotation (most common fix for Y-up to Z-up)
+python mdm_to_hugs_pipeline.py \
+    --mdm_results "${MDM_OUTPUT_DIR}/results.npy" \
+    --output "${MDM_OUTPUT_DIR}/hugs_motion.npz" \
+    --rotate_x 90.0
+
+# Output will be: ${MDM_OUTPUT_DIR}/hugs_motion.npz
+```
+
+### Option B: Test Multiple Coordinate Transformations (RECOMMENDED FOR FIRST TIME)
+
+If you're not sure which rotation fixes the issue, test all common ones:
+
+```bash
+cd /home/sigma/skibidi/motion-diffusion-model
+
+python test_coordinate_fixes.py \
+    --mdm_results "${MDM_OUTPUT_DIR}/results.npy" \
+    --output_dir "./test_conversions"
+
+# This generates:
+# - test_conversions/original.npz
+# - test_conversions/90deg_x.npz
+# - test_conversions/neg90deg_x.npz
+# - test_conversions/180deg_x.npz
+# - test_conversions/90deg_y.npz
+# - test_conversions/90deg_z.npz
+# - etc.
+```
+
+---
+
+## Step 3: Test in HUGS with Each Variant
+
+```bash
+cd /home/sigma/project_avatar2_hugs/ml-hugs-NTHUavatar
+
+# Test first variant
+python main.py --motion_file /home/sigma/skibidi/motion-diffusion-model/test_conversions/90deg_x.npz
+
+# This will generate output in: output/human_scene/neuman/...
+# Check the video to see if orientation is correct
+
+# Test other variants if needed
+python main.py --motion_file /home/sigma/skibidi/motion-diffusion-model/test_conversions/180deg_x.npz
+# etc.
+```
+
+---
+
+## Step 4: Use Correct Variant for Production
+
+Once you identify which transformation produces the correct orientation (e.g., `90deg_x`), use it:
+
+```bash
+cd /home/sigma/skibidi/motion-diffusion-model
+
+python mdm_to_hugs_pipeline.py \
+    --mdm_results "${MDM_OUTPUT_DIR}/results.npy" \
+    --output "${MDM_OUTPUT_DIR}/hugs_motion_final.npz" \
+    --rotate_x 90.0  # Use the angle you identified
+```
+
+Then in HUGS:
+
+```bash
+cd /home/sigma/project_avatar2_hugs/ml-hugs-NTHUavatar
+
+python main.py --motion_file /home/sigma/skibidi/motion-diffusion-model/test_conversions/hugs_motion_final.npz
+```
+
+---
+
+## Understanding the Coordinate System Options
+
+| Transformation | Effect | When to Use |
+|---|---|---|
+| `--rotate_x 90` | Swaps Y↔Z, keeps X | Y-up (MDM) → Z-up (common) |
+| `--rotate_x 180` | Flips Y and Z | Y-up (MDM) → Inverted Z-up |
+| `--rotate_x -90` | Opposite of 90° | Alternative Z-up convention |
+| `--rotate_y 90` | Swaps X↔Z, keeps Y | Less common, use if above don't work |
+| `--rotate_z 90` | Swaps X↔Y, keeps Z | Rotation in horizontal plane |
+
+---
+
+## Common Issues & Solutions
+
+### Issue: Avatar Still Upside-Down
+**Solution**: Try a different rotation parameter
+- If `--rotate_x 90` doesn't work, try `--rotate_x 180`
+- Or try `--rotate_x -90`
+
+### Issue: Avatar Sideways or Rotated
+**Solution**: Try Y or Z rotation combinations
+
+### Issue: Motion Looks Correct But Scaled Wrong
+**Solution**: Currently not handled - would need to scale translation vector. Contact if needed.
+
+---
+
+## Complete Example Walkthrough
+
+```bash
+# Set variables
+MDM_DIR="/home/sigma/skibidi/motion-diffusion-model"
+HUGS_DIR="/home/sigma/project_avatar2_hugs/ml-hugs-NTHUavatar"
+SAMPLE_NAME="samples_humanml_enc_512_50steps_000750000_seed10_a_person_jumps"
+SAMPLE_DIR="${MDM_DIR}/save/humanml_enc_512_50steps/${SAMPLE_NAME}"
+
+# Step 1: Check if results.npy exists
+ls "${SAMPLE_DIR}/results.npy"
+
+# Step 2: Test all variants
+cd "$MDM_DIR"
+python test_coordinate_fixes.py \
+    --mdm_results "${SAMPLE_DIR}/results.npy" \
+    --output_dir "./test_conversions_jump"
+
+# Step 3: Try each in HUGS (run individually, check output video each time)
+cd "$HUGS_DIR"
+for variant in original 90deg_x 180deg_x neg90deg_x 90deg_y 90deg_z; do
+    echo "Testing: $variant"
+    python main.py --motion_file "${MDM_DIR}/test_conversions_jump/${variant}.npz"
+    echo "Check output/human_scene/neuman/... for ${variant}.npz"
+    sleep 2
+done
+
+# Step 4: Once you know correct variant (e.g., 90deg_x), use it
+cd "$MDM_DIR"
+python mdm_to_hugs_pipeline.py \
+    --mdm_results "${SAMPLE_DIR}/results.npy" \
+    --output "${SAMPLE_DIR}/hugs_motion.npz" \
+    --rotate_x 90.0
+
+# Step 5: Final render in HUGS
+cd "$HUGS_DIR"
+python main.py --motion_file "${SAMPLE_DIR}/hugs_motion.npz"
+# Output: output/human_scene/neuman/[model]/[config]/[timestamp]/anim_neuman_....mp4
+```
+
+---
+
+## Key Files Created
+
+1. **mdm_to_hugs_pipeline.py** - Main conversion script with coordinate transformation
+   - Use this for production once you know the correct transformation
+
+2. **test_coordinate_fixes.py** - Tests all common coordinate transformations
+   - Use this first to find the right parameters
+
+3. **sample/extract_smpl_params.py** - Extracts SMPL parameters from MDM output
+   - Low-level tool, usually not needed directly
+
+---
+
+## Next Steps
+
+1. Locate your MDM results.npy file
+2. Run test_coordinate_fixes.py
+3. Test each variant in HUGS
+4. Note which one looks correct
+5. Use that rotation parameter for final conversion
+6. Render final animation in HUGS
+
+---
+
+## Notes
+
+- The rotation parameters are applied to the entire coordinate frame
+- All joint rotations and translation vectors are transformed together
+- Make sure to use consistent parameters across all your conversions
+- The most likely fix is `--rotate_x 90.0` for Y-up to Z-up conversion

@@ -1,0 +1,28 @@
+=== MDM → HUGS Animation ===
+Generated: Monday, 09 February, 2026 02:31:09 PM PST
+
+Input:
+  Motion file: /home/sigma/skibidi/motion-diffusion-model/save/humanml_enc_512_50steps/samples_humanml_enc_512_50steps_000750000_seed10_a_person_jumps/hugs_smpl_rotX90.npz
+  Output dir: /home/sigma/skibidi/motion-diffusion-model/output_mdm_to_hugs_shell_test
+
+Parameters:
+  FPS: 20
+
+Coordinate System:
+  Source (MDM): Y-up convention (mocap standard)
+  Target (HUGS): Z-up convention (graphics standard)
+  Transformation: 90° rotation around X-axis
+
+Motion Structure:
+  Frames: 120
+  Global orient: (120, 3)
+  Body pose: (120, 69)
+  Translation: (120, 3)
+  Betas: (10,)
+
+Next Steps:
+  1. cd /home/sigma/project_avatar2_hugs/ml-hugs-NTHUavatar
+  2. python scripts/test_custom_motion.py \
+       --motion_path /home/sigma/skibidi/motion-diffusion-model/output_mdm_to_hugs_shell_test/motion_input.npz \
+       --output_dir ./output/custom_animations/mdm
+  3. Check output: ./output/human/*/*/*/anim_neuman_*.mp4
