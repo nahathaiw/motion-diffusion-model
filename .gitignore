@@ -138,3 +138,6 @@ slurm**/
 *.err
 *.slurm
 .vscode/
+dataset/
+output*/
+debug_*/
