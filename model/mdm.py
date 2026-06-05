@@ -143,6 +143,11 @@ class MDM(nn.Module):
         clip.model.convert_weights(
             clip_model)  # Actually this line is unnecessary since clip by default already on float16
 
+        # float16 on CPU crashes MKL (baddbmm not implemented for Half); use float32 as fallback
+        import torch as _torch
+        if not _torch.cuda.is_available():
+            clip_model.float()
+
         # Freeze CLIP weights
         clip_model.eval()
         for p in clip_model.parameters():

@@ -2,10 +2,8 @@
 """
 Extract SMPL parameters from MDM motion results.npy and save as HUGS-compatible npz.
 
-MDM outputs results.npy as a pickled dict with shape (num_samples, 22, 3, nframes)
-containing XYZ joint positions.  This script uses SMPLify-3D (joints2smpl) to fit
-SMPL pose parameters to those joint positions, then saves a hugs_smpl_original.npz
-with keys:  global_orient (T,3), body_pose (T,69), transl (T,3), betas (10,)
+Fits SMPL pose parameters to the joint XYZ positions via SMPLify-3D.
+Runs on GPU if available (fast, ~10-30s); falls back to CPU (slow, ~5min).
 
 Must be run from the motion-diffusion-model repo root so that relative model paths
 (./body_models/...) resolve correctly.
@@ -17,19 +15,16 @@ Usage:
         --output     save/.../hugs_smpl_original.npz
 """
 
-import os
 import sys
 import numpy as np
 import torch
 import argparse
 from pathlib import Path
 
-# Add project root to path so imports work
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from visualize.joints2smpl.src import config
-from visualize.simplify_loc2rot import joints2smpl
-import utils.rotation_conversions as geometry
+from visualize.joints2smpl.src.smplify import SMPLify3D
 import smplx
 import h5py
 
@@ -39,37 +34,23 @@ def extract_smpl_params(
     output_npz_path,
     device_id=0,
     cuda=True,
+    num_iters=150,
 ):
-    """
-    Load MDM results.npy, fit SMPL via SMPLify-3D, save hugs_smpl_original.npz.
-
-    Args:
-        results_npy_path : str | Path  – MDM results.npy file
-        output_npz_path  : str | Path  – destination .npz file
-        device_id        : int         – CUDA device index
-        cuda             : bool        – use CUDA if True
-    """
     results_npy_path = Path(results_npy_path)
     output_npz_path  = Path(output_npz_path)
-    device = torch.device("cuda:" + str(device_id) if cuda else "cpu")
 
     print(f"Loading MDM results from: {results_npy_path}")
     results = np.load(str(results_npy_path), allow_pickle=True).item()
 
     motion = results['motion']           # (num_samples, 22, 3, nframes)
-    length = int(results['lengths'][0])  # actual number of valid frames
+    length = int(results['lengths'][0])
     print(f"Motion shape: {motion.shape}  |  valid frames: {length}")
 
-    # Take first sample, transpose to (nframes, 22, 3)
     joints = motion[0].transpose(2, 0, 1)[:length]   # (T, 22, 3)
     nframes = joints.shape[0]
-    print(f"Using first sample: {joints.shape}")
 
-    # ---- Set up SMPLify-3D directly (mirrors joints2smpl internals) ----
-    print(f"\nFitting SMPL parameters ({nframes} frames) via SMPLify-3D...")
-    print(config.SMPL_MODEL_DIR)
-
-    from visualize.joints2smpl.src.smplify import SMPLify3D
+    device = torch.device(f"cuda:{device_id}" if cuda and torch.cuda.is_available() else "cpu")
+    print(f"Fitting SMPL ({nframes} frames, {num_iters} iters) on {device}")
 
     smplmodel = smplx.create(
         config.SMPL_MODEL_DIR,
@@ -86,7 +67,7 @@ def extract_smpl_params(
         smplxmodel=smplmodel,
         batch_size=nframes,
         joints_category="AMASS",
-        num_iters=150,
+        num_iters=num_iters,
         device=device,
     )
 
@@ -100,14 +81,13 @@ def extract_smpl_params(
         keypoints_3d,
         conf_3d=confidence,
     )
-    # new_opt_pose: (T, 72) axis-angle  |  new_opt_betas: (T, 10)
 
-    poses = new_opt_pose.detach().cpu().numpy()   # (T, 72)
-    betas = new_opt_betas[0].detach().cpu().numpy()[:10]  # (10,) – use first frame betas
+    poses = new_opt_pose.detach().cpu().numpy()
+    betas = new_opt_betas[0].detach().cpu().numpy()[:10]
 
-    global_orient = poses[:, :3].astype(np.float32)   # (T, 3)
-    body_pose     = poses[:, 3:].astype(np.float32)   # (T, 69)
-    transl        = joints[:, 0, :].astype(np.float32) # (T, 3) root hip position
+    global_orient = poses[:, :3].astype(np.float32)
+    body_pose     = poses[:, 3:].astype(np.float32)
+    transl        = joints[:, 0, :].astype(np.float32)
 
     print(f"\nSMPL parameters extracted:")
     print(f"  global_orient : {global_orient.shape}")
@@ -115,47 +95,36 @@ def extract_smpl_params(
     print(f"  transl        : {transl.shape}")
     print(f"  betas         : {betas.shape}")
 
-    # ---- Save ----
     output_npz_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(str(output_npz_path),
              global_orient=global_orient,
              body_pose=body_pose,
              transl=transl,
              betas=betas)
-    print(f"\n✓ Saved hugs_smpl_original.npz to: {output_npz_path}")
+    print(f"\n✓ Saved to: {output_npz_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Extract SMPL parameters from MDM results.npy → hugs_smpl_original.npz'
-    )
-    parser.add_argument('--motion_data', '-m', required=True,
-                        help='Path to MDM results.npy file')
-    parser.add_argument('--output', '-o', default=None,
-                        help='Destination .npz file (default: same dir as motion_data, '
-                             'named hugs_smpl_original.npz)')
-    parser.add_argument('--device_id', type=int, default=0,
-                        help='CUDA device index (default: 0)')
-    parser.add_argument('--cpu', action='store_true',
-                        help='Force CPU even if CUDA is available')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--motion_data', '-m', required=True)
+    parser.add_argument('--output', '-o', default=None)
+    parser.add_argument('--device_id', type=int, default=0)
+    parser.add_argument('--cpu', action='store_true')
+    parser.add_argument('--num_iters', type=int, default=150,
+                        help='SMPLify-3D iterations (default: 150; use 50 for faster/slightly rougher fit)')
 
     args = parser.parse_args()
 
     motion_path = Path(args.motion_data)
-    if args.output is None:
-        output_path = motion_path.parent / 'hugs_smpl_original.npz'
-    else:
-        output_path = Path(args.output)
-
+    output_path = Path(args.output) if args.output else motion_path.parent / 'hugs_smpl_original.npz'
     cuda = (not args.cpu) and torch.cuda.is_available()
-    if not cuda:
-        print("Running on CPU (SMPLify will be slow)")
 
     extract_smpl_params(
         results_npy_path=motion_path,
         output_npz_path=output_path,
         device_id=args.device_id,
         cuda=cuda,
+        num_iters=args.num_iters,
     )
 
 
